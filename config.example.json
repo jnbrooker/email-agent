@@ -1,0 +1,8 @@
+{
+  "accounts": [],
+  "agents": [
+    {"key": "hospitality",  "label": "Arena hospitality",  "compose": "compose-system.md",       "reply": "reply-system.md"},
+    {"key": "conferencing", "label": "Conferencing",        "compose": "compose-conferencing.md", "reply": "reply-conferencing.md"},
+    {"key": "football",     "label": "Football hospitality","compose": "compose-football.md",     "reply": "reply-football.md"}
+  ]
+}

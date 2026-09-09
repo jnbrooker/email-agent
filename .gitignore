@@ -1,0 +1,33 @@
+# ── secrets — NEVER commit ─────────────────────────────
+.env
+.env.*
+*.bak
+
+# ── per-user config (created by the Setup tab) ─────────
+config.json
+
+# ── campaign / runtime state (personal + third-party data) ──
+queue.txt
+queue-handled.txt
+handled.txt
+decided.txt
+allow.txt
+agent.log
+
+# ── purchased / third-party contact data ───────────────
+IQ_Arena_Directory_2026.xlsx
+*_Directory_*.xlsx
+Birmingham*.pdf
+spare.txt
+
+# ── scratch / debug ────────────────────────────────────
+sent_dump.txt
+el_help.txt
+compose_test.txt
+enc_test.txt
+newuser-test/
+
+# ── python / streamlit ─────────────────────────────────
+__pycache__/
+*.pyc
+.streamlit/
