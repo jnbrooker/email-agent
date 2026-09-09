@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-BUILD = "2026-09-09j (reply verify pass)"
+BUILD = "2026-09-09k (allow replies to all)"
 
 # ---------- executables ----------
 def find_exe(name, fallbacks):
@@ -347,7 +347,7 @@ def build_xlsx(rows):
     bio=io.BytesIO(); wb.save(bio); return bio.getvalue()
 
 # ---------- pipeline ----------
-def run_pipeline(cfg, hkey, name, model, autosend, cap, status):
+def run_pipeline(cfg, hkey, name, model, autosend, cap, status, reply_all=False):
     def say(m): 
         try: status.write(m)
         except Exception: pass
@@ -382,8 +382,8 @@ def run_pipeline(cfg, hkey, name, model, autosend, cap, status):
         text,_=gen_reply(cfg,key,name,fr,subj,body,model)
         if (not text) or text.strip()=="SKIP":
             remember_decision(mid,"SKIP","model declined"); say("　↳ model declined — skipped"); continue
-        will_send = autosend and contacted
-        if not contacted and autosend: say("　↳ not a known contact → sending to Review")
+        will_send = autosend and (contacted or reply_all)
+        if autosend and not contacted and not reply_all: say("　↳ not a known contact → sending to Review")
         if will_send:
             res=reply_send(hkey,frm_me,fr,subj,mid,text)
             say(f"　✅ SENT → {fr}" if ok(res) else f"　❌ send fail: {emsg(res)}")
@@ -431,7 +431,9 @@ with st.sidebar:
     st.markdown("---")
     with st.expander("🤖 Auto-run pipeline", expanded=True):
         auto_send=st.checkbox("Auto-SEND replies", value=False,
-            help="When ON, the pipeline SENDS to known contacts (no need to touch Mode). Everything it does NOT send goes to the Review tab (not Gmail drafts).")
+            help="When ON, the pipeline SENDS (no need to touch Mode). What it does NOT send goes to the Review tab, not Gmail drafts.")
+        reply_all=st.checkbox("…to ALL senders (not just known contacts)", value=(st.query_params.get("rall")=="1"),
+            help="Replies always go back to the sender, so this is safe. OFF = only auto-send to people in your queue; anyone else goes to Review.")
         cap=st.number_input("Max actions per run",1,50,5)
         run_now=st.button("▶ Run once now", width="stretch")
         interval=st.number_input("Repeat every N minutes",1,240,15)
@@ -439,7 +441,7 @@ with st.sidebar:
         cX,cY=st.columns(2)
         if cX.button(("🟢 Repeating" if repeat_on else "🔁 Start repeat"), width="stretch", disabled=repeat_on):
             st.query_params["auto"]="1"; st.query_params["int"]=str(int(interval))
-            st.query_params["send"]="1" if auto_send else "0"; st.query_params["cap"]=str(int(cap)); st.query_params["acct"]=acct
+            st.query_params["send"]="1" if auto_send else "0"; st.query_params["rall"]="1" if reply_all else "0"; st.query_params["cap"]=str(int(cap)); st.query_params["acct"]=acct
             st.rerun()
         if cY.button("⏹ Stop", width="stretch", disabled=not repeat_on):
             st.query_params.clear(); st.rerun()
@@ -455,7 +457,7 @@ if st.query_params.get("auto")=="1":
         ss["_auto_fired"]=True
         a2=st.query_params.get("acct") or acct; i2=account_info(cfg,a2)
         with st.status(f"🤖 Auto-run for {i2.get('name') or a2}…", expanded=True) as sbox:
-            run_pipeline(cfg, a2, i2.get("name") or a2, model, st.query_params.get("send")=="1", int(st.query_params.get("cap") or 5), sbox)
+            run_pipeline(cfg, a2, i2.get("name") or a2, model, st.query_params.get("send")=="1", int(st.query_params.get("cap") or 5), sbox, st.query_params.get("rall")=="1")
         st.query_params["t0"]=str(int(time.time()))
     t0=int(st.query_params.get("t0") or int(time.time())); target=(t0+itv*60)*1000
     _components.html(f"""<div style="font-family:Roboto,Arial;font-size:14px;color:#d93025;font-weight:600">
@@ -469,7 +471,7 @@ if st.query_params.get("auto")=="1":
 
 if run_now:
     with st.status(f"🤖 Running pipeline for {NAME}…", expanded=True) as sbox:
-        run_pipeline(cfg, acct, NAME, model, auto_send, int(cap), sbox)
+        run_pipeline(cfg, acct, NAME, model, auto_send, int(cap), sbox, reply_all)
 
 _rev=load_review()
 if _rev: st.toast(f"📥 {len(_rev)} reply(ies) need review")
