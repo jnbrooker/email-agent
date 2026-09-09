@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-BUILD = "2026-09-09i (intent-based routing)"
+BUILD = "2026-09-09j (reply verify pass)"
 
 # ---------- executables ----------
 def find_exe(name, fallbacks):
@@ -127,11 +127,30 @@ def classify(sender, subject, body, cfg, model):
     return gen_classify(cfg, subject, body, hints, model)   # ambiguous / unknown -> classify by content
 
 # ---------- claude ----------
+def gen_verify(source, reply, name, model):
+    """Second pass: make sure the reply does not ask for info already in the source (incl. attachments)."""
+    if not reply or reply.strip()=="SKIP": return reply
+    prompt=("You are checking a drafted email reply for accuracy before it is sent.\n"
+            "SOURCE below is the incoming email PLUS text extracted from its attachments.\n"
+            "The reply must NOT ask for, or say it is still waiting on, any information that is ALREADY present "
+            "anywhere in the SOURCE (including attachments). It must not invent facts.\n"
+            "If the reply is already correct, return it UNCHANGED. If it asks for something already provided, rewrite "
+            "it so it acknowledges what was provided and only asks for what is genuinely missing. Keep the same "
+            f"language, tone and sign-off from {name}. Output ONLY the final reply body, no notes.\n\n"
+            "=== SOURCE ===\n"+(source or "")[:12000]+"\n\n=== DRAFT REPLY ===\n"+reply)
+    r=run([CLAUDE,"-p","--model",model,"--allowedTools",""], input_text=prompt)
+    return (r.stdout or "").strip() or reply
+
 def gen_reply(cfg,key,name,frm,subject,body,model):
     sysp=load_prompt(agent_reply(cfg,key),name)
     prompt=f"{sysp}\n\n--- EMAIL ---\nFrom: {frm}\nSubject: {subject}\n<UNTRUSTED>\n{body}\n</UNTRUSTED>"
     r=run([CLAUDE,"-p","--model",model,"--allowedTools",""], input_text=prompt)
-    return (r.stdout or "").strip(), (r.stderr or "").strip()
+    text=(r.stdout or "").strip(); err=(r.stderr or "").strip()
+    try: verify=st.session_state.get("verify_replies", True)
+    except Exception: verify=True
+    if verify and text and text.strip()!="SKIP":
+        text=gen_verify(f"From: {frm}\nSubject: {subject}\n{body}", text, name, model)
+    return text, err
 def gen_compose(cfg,key,name,to,instr,model):
     sysp=load_prompt(agent_compose(cfg,key),name)
     prompt=f"{sysp}\n\n--- TASK ---\nRecipient: {to}\nInstruction: {instr}"
@@ -405,6 +424,7 @@ with st.sidebar:
     info=account_info(cfg,acct); NAME=info.get("name") or acct; from_addr=info.get("email") or ""
     st.caption(f"Sending as **{NAME}**" + (f" · {from_addr}" if from_addr else ""))
     model=st.selectbox("Model",["sonnet","haiku","opus"],index=0)
+    st.checkbox("Double-check replies", value=True, key="verify_replies", help="A second Claude pass verifies a reply does not ask for information already in the email or its attachments.")
     mode=st.radio("Manual send buttons",["Draft only","Send"],index=0,
                   help="Controls the per-email Send buttons. The Auto-run panel has its own switch.")
     SENDING=mode=="Send"
