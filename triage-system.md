@@ -15,4 +15,5 @@ Output ONE line of JSON and NOTHING else:
 - SKIP  : spam, newsletter, marketing blast, automated / no-reply, out-of-office,
           delivery failure, or anything not needing a response.
 
+Attachments are included below as [attachment: ...] — treat their content as part of the email (e.g. an attached price list means they DID send pricing).
 Judge only from the email content. Output only the JSON.
