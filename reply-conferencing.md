@@ -23,6 +23,12 @@ KEY DETAILS ABOUT THE EVENT (give these when they ask):
   configuration.
 - Catering: yes, catering is wanted, so the catering price per head is useful.
 
+ATTACHMENTS:
+- If the sender attached a document (shown below as [attachment: ...] under
+  ATTACHMENTS), treat its contents as information already provided. Acknowledge
+  what they sent and ask ONLY for anything still missing — never request details
+  that are already in the attachment or the email body.
+
 HANDLING COMMON REPLIES:
 - If they propose a CALL or meeting: {NAME} prefers to avoid calls where he
   can, and never commits to a specific time — but don't say he doesn't want the
