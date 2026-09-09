@@ -1,8 +1,14 @@
 {
   "accounts": [],
   "agents": [
-    {"key": "hospitality",  "label": "Arena hospitality",  "compose": "compose-system.md",       "reply": "reply-system.md"},
-    {"key": "conferencing", "label": "Conferencing",        "compose": "compose-conferencing.md", "reply": "reply-conferencing.md"},
-    {"key": "football",     "label": "Football hospitality","compose": "compose-football.md",     "reply": "reply-football.md"}
+    {"key": "hospitality",  "label": "Arena hospitality",
+     "desc": "Annual corporate hospitality passes at large multi-purpose ARENAS/VENUES for shows, concerts and events across a season. NOT conferences, NOT watching football.",
+     "compose": "compose-system.md", "reply": "reply-system.md"},
+    {"key": "conferencing", "label": "Conferencing",
+     "desc": "Hiring space for CONFERENCES, meetings and business events (day-delegate rates, room hire, delegate numbers). Applies even when the venue is a football stadium or arena.",
+     "compose": "compose-conferencing.md", "reply": "reply-conferencing.md"},
+    {"key": "football",     "label": "Football hospitality",
+     "desc": "Corporate hospitality for WATCHING FOOTBALL — matchday and season hospitality, executive boxes/suites at football clubs.",
+     "compose": "compose-football.md", "reply": "reply-football.md"}
   ]
 }
