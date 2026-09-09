@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-BUILD = "2026-09-09d (bigger cap for extract)"
+BUILD = "2026-09-09h (stay on Review tab)"
 
 # ---------- executables ----------
 def find_exe(name, fallbacks):
@@ -268,6 +268,36 @@ def remember_decision(mid,action,reason):
     with open(os.path.join(BASE,DECIDED),"a",encoding="utf-8",newline="\n") as f:
         f.write(f"{mid}\t{action}\t{reason}\n")
 
+REVIEW="review.json"
+def load_review():
+    try: return json.load(open(os.path.join(BASE,REVIEW),encoding="utf-8"))
+    except Exception: return {}
+def save_review(d): json.dump(d, open(os.path.join(BASE,REVIEW),"w",encoding="utf-8"), indent=2)
+def add_review(item):
+    d=load_review(); d[item.get("msgid") or str(item.get("id"))]=item; save_review(d)
+def update_review(k, **kw):
+    d=load_review()
+    if k in d: d[k].update(kw); save_review(d)
+def remove_review(k):
+    d=load_review(); d.pop(k,None); save_review(d)
+def translate_en(text, model):
+    text=(text or "").strip()
+    if not text: return ""
+    r=run([CLAUDE,"-p","--model",model,"--allowedTools",""],
+          input_text="Translate the following to English. If it is already English, return it unchanged. Output ONLY the translation.\n\n"+text[:4000])
+    return (r.stdout or "").strip()
+
+def needs_translation(text):
+    t=text or ""
+    if re.search(r'[À-ÿ]', t): return True
+    low=" "+t.lower()+" "
+    for w in (" le "," la "," les "," une "," pour "," vous "," nous "," est "," avec "," votre ",
+              " der "," die "," das "," und "," für "," mit "," wir "," sie "," ihre ",
+              " el "," los "," las "," para "," con "," gracias "," saludos "," estimado ",
+              " grazie "," cordiali "," gentile "):
+        if w in low: return True
+    return False
+
 def append_lines(fname,lines,header):
     with open(os.path.join(BASE,fname),"a",encoding="utf-8",newline="\n") as f:
         f.write("\n"+header+"\n"+"\n".join(lines)+"\n")
@@ -292,14 +322,14 @@ def run_pipeline(cfg, hkey, name, model, autosend, cap, status):
     say("📥 Loading inbox…")
     envs,err=inbox(hkey)
     if err: say(f"❌ inbox error: {err}"); return
-    dom,addr=queue_map(); sm=sent_map(hkey); decided=load_decided()
+    dom,addr=queue_map(); sm=sent_map(hkey); decided=load_decided(); review=load_review()
     frm_me=account_info(cfg,hkey).get("email") or ""
     default_key=agent_keys(cfg)[0]
     cands=[]
     for e in envs:
         fr=frm(e).lower(); subj=(e.get("subject") or "").lower()
         mid=e.get("message-id") or str(e.get("id"))
-        if mid in decided: continue
+        if mid in decided or mid in review: continue
         if any(b in fr for b in BULK): continue
         din=_dt(e.get("date")); ds=sm.get(fr)
         if din and ds and ds>din: continue          # already replied
@@ -321,12 +351,17 @@ def run_pipeline(cfg, hkey, name, model, autosend, cap, status):
         if (not text) or text.strip()=="SKIP":
             remember_decision(mid,"SKIP","model declined"); say("　↳ model declined — skipped"); continue
         will_send = autosend and contacted
-        if not contacted and autosend: say("　↳ not a known contact → drafting (won't auto-send)")
+        if not contacted and autosend: say("　↳ not a known contact → sending to Review")
         if will_send:
-            res=reply_send(hkey,frm_me,fr,subj,mid,text); say(f"　✅ SENT → {fr}" if ok(res) else f"　❌ send fail: {emsg(res)}")
+            res=reply_send(hkey,frm_me,fr,subj,mid,text)
+            say(f"　✅ SENT → {fr}" if ok(res) else f"　❌ send fail: {emsg(res)}")
+            if ok(res): acted+=1
         else:
-            res=reply_draft(hkey,frm_me,fr,subj,mid,text); say(f"　📝 drafted → {fr}" if ok(res) else f"　❌ draft fail: {emsg(res)}")
-        if ok(res): acted+=1
+            add_review({"msgid":mid,"id":e.get("id"),"from":fr,"subject":subj,"type":key,
+                        "original":body,"reply":text,"reply_en":(translate_en(text,model) if needs_translation(text) else ""),
+                        "reason":tr.get("reason",""),"contacted":contacted,
+                        "added":datetime.datetime.now().isoformat(timespec="seconds")})
+            say(f"　🔎 queued for review → {fr}"); acted+=1
     say(f"✅ Finished — {acted} action(s).")
 
 # ================= UI =================
@@ -363,7 +398,7 @@ with st.sidebar:
     st.markdown("---")
     with st.expander("🤖 Auto-run pipeline", expanded=True):
         auto_send=st.checkbox("Auto-SEND replies", value=False,
-            help="When ON, the pipeline SENDS to known contacts (no need to touch Mode). When OFF it drafts. Non-contacts are always drafted.")
+            help="When ON, the pipeline SENDS to known contacts (no need to touch Mode). Everything it does NOT send goes to the Review tab (not Gmail drafts).")
         cap=st.number_input("Max actions per run",1,50,5)
         run_now=st.button("▶ Run once now", width="stretch")
         interval=st.number_input("Repeat every N minutes",1,240,15)
@@ -403,8 +438,10 @@ if run_now:
     with st.status(f"🤖 Running pipeline for {NAME}…", expanded=True) as sbox:
         run_pipeline(cfg, acct, NAME, model, auto_send, int(cap), sbox)
 
-tab_inbox, tab_queue, tab_extract, tab_setup = st.tabs(
-    ["📥  Inbox", "📤  Outreach", "📊  Extract", "🛠  Setup"])
+_rev=load_review()
+if _rev: st.toast(f"📥 {len(_rev)} reply(ies) need review")
+tab_inbox, tab_review, tab_queue, tab_extract, tab_setup = st.tabs(
+    ["📥  Inbox", "📝  Review", "📤  Outreach", "📊  Extract", "🛠  Setup"])
 
 # ---------------- INBOX ----------------
 with tab_inbox:
@@ -447,7 +484,14 @@ with tab_inbox:
             disabled=["Action","From","Subject","Date"],key=f"tbl_{ss.tbl_ver}")
         sel=[emails[i] for i,v in enumerate(ed["Select"]) if v]
         st.caption(f"{len(sel)} selected")
-        if st.button("✍️ Generate replies", disabled=not sel):
+        gcol,dcol=st.columns([1,1])
+        if dcol.button("🚫 No reply needed", disabled=not sel, help="Mark the ticked emails as not needing a reply — they'll be ignored by Suggest and the pipeline from now on."):
+            selids={str(e.get("id")) for e in sel}
+            for e in sel:
+                eid=str(e.get("id")); mid=e.get("message-id") or eid
+                remember_decision(mid,"SKIP","you marked no-reply"); ss.triage[eid]={"action":"SKIP","reason":"you marked no-reply"}
+            ss.suggest={x for x in ss.suggest if x not in selids}; ss.tbl_ver+=1; st.rerun()
+        if gcol.button("✍️ Generate replies", disabled=not sel):
             default_key=agent_keys(cfg)[0]; pr=st.progress(0.0)
             for n,e in enumerate(sel):
                 fr=frm(e); subj=e.get("subject",""); body=body_ctx(acct,e)
@@ -496,6 +540,33 @@ with tab_inbox:
             if b2.button("📨 Send",key=f"sd_{eid}",disabled=not SENDING):
                 res=reply_send(acct,from_addr,r["from"],r["subject"],r.get("msgid",""),r["text"]); r["done"]="SENT ✓" if ok(res) else f"fail: {emsg(res)}"
             if r["done"]: (b3.success if "✓" in r["done"] else b3.error)(r["done"])
+
+# ---------------- REVIEW ----------------
+with tab_review:
+    rev=load_review()
+    st.subheader(f"Needs review ({len(rev)})")
+    if not rev:
+        st.info("Nothing to review. The Auto-run pipeline parks replies it won't auto-send here (instead of Gmail drafts) so they don't get lost.")
+    for k,it in list(rev.items()):
+        with st.expander(f"✍️  {it['from']} — {it['subject']}   ·  [{it['type']}]  ·  {it.get('reason','')}", expanded=True):
+            c1,c2=st.columns(2)
+            c1.markdown("**Original message**"); c1.text((it.get('original','') or '')[:3000])
+            c2.markdown("**Proposed reply**")
+            newtext=c2.text_area("reply",value=it.get('reply',''),height=260,key=f"rev_{k}",label_visibility="collapsed")
+            ren=it.get('reply_en','')
+            if not ren and needs_translation(it.get('reply','')):
+                ren=translate_en(it.get('reply',''),model); update_review(k, reply_en=ren)
+            if ren:
+                c2.markdown("**Reply — English translation**"); c2.text(ren)
+            b1,b2,b3=st.columns(3)
+            if b1.button("📨 Send",key=f"rs_{k}"):
+                res=reply_send(acct,from_addr,it['from'],it['subject'],it.get('msgid',''),newtext)
+                if ok(res): remove_review(k); st.rerun()
+                else: st.error(emsg(res))
+            if b2.button("💾 Gmail draft",key=f"rgd_{k}"):
+                reply_draft(acct,from_addr,it['from'],it['subject'],it.get('msgid',''),newtext); remove_review(k); st.rerun()
+            if b3.button("🗑 Dismiss",key=f"rx_{k}"):
+                remember_decision(k,"SKIP","dismissed from review"); remove_review(k); st.rerun()
 
 # ---------------- OUTREACH ----------------
 with tab_queue:

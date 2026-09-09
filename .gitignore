@@ -31,3 +31,4 @@ newuser-test/
 __pycache__/
 *.pyc
 .streamlit/
+review.json
