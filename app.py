@@ -454,13 +454,26 @@ def in_allow(email):
     p=os.path.join(BASE,"allow.txt")
     return os.path.exists(p) and email.lower() in open(p,encoding="utf-8").read().lower()
 
+def pricing_row(typ, contact, it):
+    """One extracted package -> a row keyed by the exact Pricing_Template.xlsx headers."""
+    return {"Type":typ, "Team / Arena / Venue":it.get("team_or_venue") or contact.split("@")[-1],
+            "Package Name":it.get("package",""), "Total Capacity":it.get("total_capacity",""),
+            "Room Capacity":it.get("room_capacity",""), "Currency":it.get("currency",""),
+            "Price":it.get("price",""), "VAT Incl.":it.get("vat_incl",""),
+            "Contact":contact, "Package Information":it.get("included","")}
+
 def build_xlsx(rows):
+    """Fill the template by matching row keys to its header row, so a column
+    added/moved/renamed in Pricing_Template.xlsx doesn't silently misalign."""
     import openpyxl
     tpl=os.path.join(BASE,"Pricing_Template.xlsx")
     wb=openpyxl.load_workbook(tpl) if os.path.exists(tpl) else openpyxl.Workbook(); ws=wb.active
+    hdr=[(c.value or "").strip() if isinstance(c.value,str) else "" for c in ws[1]]
+    if not any(hdr):                       # no template / empty sheet -> write our own header
+        hdr=list(rows[0].keys()) if rows else []
+        if hdr: ws.append(hdr)
     for r in rows:
-        ws.append([r.get("Type",""),r.get("Team / Arena / Venue",""),r.get("Package Name",""),
-                   r.get("Capacity",""),r.get("Price",""),r.get("Contact",""),r.get("Included / Notes","")])
+        ws.append([r.get(h,"") for h in hdr])
     bio=io.BytesIO(); wb.save(bio); return bio.getvalue()
 
 # ---------- pipeline ----------
@@ -775,11 +788,8 @@ with tab_extract:
             for n,e in enumerate(sel):
                 fr=frm(e); subj=e.get("subject",""); body=body_ctx(acct,e,40000,20000); t=classify(fr,subj,body,cfg,model)
                 items=gen_extract(body,model)
-                if not items: rows.append({"Type":t,"Team / Arena / Venue":fr.split("@")[-1],"Package Name":"(no pricing found)","Capacity":"","Price":"","Contact":fr,"Included / Notes":""})
-                for it in items:
-                    rows.append({"Type":t,"Team / Arena / Venue":it.get("team_or_venue") or fr.split("@")[-1],
-                        "Package Name":it.get("package",""),"Capacity":it.get("capacity",""),"Price":it.get("price",""),
-                        "Contact":fr,"Included / Notes":it.get("included","")})
+                if not items: rows.append(pricing_row(t,fr,{"package":"(no pricing found)"}))
+                for it in items: rows.append(pricing_row(t,fr,it))
                 pr.progress((n+1)/len(sel))
             pr.empty(); ss.ex_rows=rows
     if ss.get("ex_rows"):
