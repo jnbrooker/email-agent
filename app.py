@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-BUILD = "2026-09-11a (threaded conversations)"
+BUILD = "2026-09-15a (venue facts + scan whole inbox)"
 
 # ---------- executables ----------
 def find_exe(name, fallbacks):
@@ -193,6 +193,27 @@ def gen_extract(body, model):
             except Exception: return []
         return []
 
+def gen_venue(body, model):
+    """Venue facts (capacities, number of hospitality options, ...) -> dict keyed as venue-system.md."""
+    prompt=f"{load('venue-system.md')}\n\n--- CONVERSATION ---\n{body}"
+    r=run([CLAUDE,"-p","--model",model,"--allowedTools",""], input_text=prompt)
+    out=re.sub(r'^```(json)?|```$','',(r.stdout or "").strip(),flags=re.M).strip()
+    m=re.search(r'\{.*\}', out, re.S)
+    for cand in (out, m.group(0) if m else ""):
+        try:
+            d=json.loads(cand)
+            if isinstance(d,dict): return d
+        except Exception: pass
+    return {}
+VENUE_COLS=["Venue","Location","Concert capacity","Hospitality capacity","No. of options","Options","Annual pass",
+            "Pricing provided","Price range","Status","Contact","Notes"]
+def venue_row(contact, d):
+    return {"Venue":d.get("venue") or contact.split("@")[-1], "Location":d.get("location",""),
+            "Concert capacity":d.get("concert_capacity",""), "Hospitality capacity":d.get("hospitality_capacity",""),
+            "No. of options":d.get("num_options",""), "Options":d.get("options",""), "Annual pass":d.get("annual_pass",""),
+            "Pricing provided":d.get("pricing_provided",""), "Price range":d.get("price_range",""),
+            "Status":d.get("status",""), "Contact":contact, "Notes":d.get("notes","")}
+
 # ---------- himalaya ----------
 def H(acct,*a): return [HIM,"-a",acct,*a]
 def inbox(acct):
@@ -354,7 +375,7 @@ def _msg_body(acct, m):
         return st.session_state[k]
     except Exception: return read_body(acct, m.get("id"), m["_box"])
 
-def thread_ctx(acct, th, name="", maxchars=14000):
+def thread_ctx(acct, th, name="", maxchars=14000, att_max=8000, att_per=4000):
     """The conversation as one transcript (oldest first) for Claude. Earlier messages are de-quoted
     and capped; the newest message is included in full with its attachments."""
     msgs=th["msgs"]; last=msgs[-1]
@@ -363,7 +384,7 @@ def thread_ctx(acct, th, name="", maxchars=14000):
         for i,m in enumerate(msgs):
             who=f"{name or 'us'} (US)" if m["_dir"]=="out" else f"{frm(m)} (THEM)"
             when=m["_dt"].astimezone().strftime("%Y-%m-%d %H:%M") if m["_dt"].year>1 else str(m.get("date",""))[:16]
-            if m is last: body=body_ctx(acct,m)
+            if m is last: body=body_ctx(acct,m,att_max,att_per)
             else:
                 body=strip_quoted(_msg_body(acct,m)) or "(empty)"
                 if len(body)>cap: body=body[:cap]+"\n[... truncated ...]"
@@ -474,6 +495,12 @@ def build_xlsx(rows):
         if hdr: ws.append(hdr)
     for r in rows:
         ws.append([r.get(h,"") for h in hdr])
+    bio=io.BytesIO(); wb.save(bio); return bio.getvalue()
+
+def build_simple_xlsx(rows, cols, title):
+    import openpyxl
+    wb=openpyxl.Workbook(); ws=wb.active; ws.title=title; ws.append(cols)
+    for r in rows: ws.append([r.get(c,"") for c in cols])
     bio=io.BytesIO(); wb.save(bio); return bio.getvalue()
 
 # ---------- pipeline ----------
@@ -771,28 +798,46 @@ with tab_queue:
 
 # ---------------- EXTRACT ----------------
 with tab_extract:
-    st.subheader("Extract pricing from replies → spreadsheet")
-    if st.button("🔄 Load inbox for extraction"):
-        envs,err=inbox(acct)
+    st.subheader("Extract from replies → spreadsheet")
+    ex_mode=st.radio("What to extract",["Pricing packages","Venue facts"],horizontal=True,
+        help="Pricing: one row per package/price quoted (fills Pricing_Template.xlsx). Venue facts: one row per venue — capacities, number of hospitality options, status.")
+    if st.button("🔄 Load inbox for extraction", help="Loads inbox + sent grouped into conversations, so pricing spread across a thread (or in an earlier attachment) is all seen together."):
+        ths,nmsg,err=load_threads(acct, from_addr)
         if err: st.error(err)
-        ss.ex_emails=envs
-    exs=ss.get("ex_emails",[])
-    if not exs: st.info("Load the inbox, tick pricing replies, Extract.")
+        ss.ex_threads=[t for t in ths if not any(b in t["from"].lower() for b in BULK)]
+    exs=ss.get("ex_threads",[])
+    if not exs: st.info("Load the inbox, then either tick conversations and **Extract from selected**, or **Scan whole inbox**.")
     else:
-        df=pd.DataFrame({"Select":[False]*len(exs),"From":[frm(e) for e in exs],
-            "Subject":[e.get("subject","") for e in exs],"Date":[str(e.get("date",""))[:16] for e in exs]})
-        ed=st.data_editor(df,hide_index=True,width="stretch",disabled=["From","Subject","Date"],key="ex_tbl")
+        df=pd.DataFrame({"Select":[False]*len(exs),"From":[t["from"] for t in exs],"Subject":[t["subject"] for t in exs],
+            "Msgs":[t["n"] for t in exs],"Date":[t["date"].astimezone().strftime("%Y-%m-%d %H:%M") for t in exs]})
+        ed=st.data_editor(df,hide_index=True,width="stretch",disabled=["From","Subject","Msgs","Date"],key="ex_tbl")
         sel=[exs[i] for i,v in enumerate(ed["Select"]) if v]
-        if st.button("📊 Extract from selected", disabled=not sel):
-            rows=[]; pr=st.progress(0.0); default_key=agent_keys(cfg)[0]
-            for n,e in enumerate(sel):
-                fr=frm(e); subj=e.get("subject",""); body=body_ctx(acct,e,40000,20000); t=classify(fr,subj,body,cfg,model)
-                items=gen_extract(body,model)
-                if not items: rows.append(pricing_row(t,fr,{"package":"(no pricing found)"}))
-                for it in items: rows.append(pricing_row(t,fr,it))
-                pr.progress((n+1)/len(sel))
-            pr.empty(); ss.ex_rows=rows
-    if ss.get("ex_rows"):
+        b1,b2,b3=st.columns([1,1,2])
+        go_sel=b1.button("📊 Extract from selected", disabled=not sel)
+        go_all=b2.button(f"🔍 Scan whole inbox ({len(exs)})", help="Runs the extraction over every conversation listed — no ticking needed. One Claude call per conversation, so this takes a while.")
+        targets = exs if go_all else (sel if go_sel else [])
+        if targets:
+            rows=[]; pr=st.progress(0.0)
+            for n,t in enumerate(targets):
+                pr.progress(n/len(targets), text=f"{'Venue facts' if ex_mode=='Venue facts' else 'Pricing'}: {t['from']} ({n+1}/{len(targets)})")
+                fr=t["from"]; body=thread_ctx(acct,t,NAME,maxchars=40000,att_max=40000,att_per=20000)
+                if ex_mode=="Venue facts":
+                    rows.append(venue_row(fr, gen_venue(body,model)))
+                else:
+                    typ=classify(fr,t["subject"],body,cfg,model); items=gen_extract(body,model)
+                    if not items: rows.append(pricing_row(typ,fr,{"package":"(no pricing found)"}))
+                    for it in items: rows.append(pricing_row(typ,fr,it))
+            pr.empty()
+            if ex_mode=="Venue facts": ss.venue_rows=rows
+            else: ss.ex_rows=rows
+    if ex_mode=="Venue facts" and ss.get("venue_rows"):
+        st.markdown(f"**Venue facts ({len(ss.venue_rows)} venues)**")
+        edited=st.data_editor(pd.DataFrame(ss.venue_rows, columns=VENUE_COLS), num_rows="dynamic", width="stretch", key="venue_review")
+        st.download_button("⬇️ Download venue table", build_simple_xlsx(edited.to_dict("records"), VENUE_COLS, "Venues"),
+            file_name=f"venue_facts_{datetime.date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if ex_mode=="Pricing packages" and ss.get("ex_rows"):
+        st.markdown(f"**Pricing rows ({len(ss.ex_rows)})**")
         edited=st.data_editor(pd.DataFrame(ss.ex_rows), num_rows="dynamic", width="stretch", key="ex_review")
         st.download_button("⬇️ Download filled spreadsheet", build_xlsx(edited.to_dict("records")),
             file_name=f"hospitality_pricing_{datetime.date.today()}.xlsx",
